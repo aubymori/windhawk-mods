@@ -2,12 +2,12 @@
 // @id              win32-tray-clock-experience
 // @name            Win32 Tray Clock Experience
 // @description     Use the Win32 clock flyout instead of the XAML one
-// @version         1.0.0
+// @version         1.1.0
 // @author          aubymori
 // @github          https://github.com/aubymori
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -lole32
+// @compilerOptions -lcomctl32 -lole32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -26,14 +26,11 @@ Based on the ExplorerPatcher implementation.
 */
 // ==/WindhawkModReadme==
 
-#include <initguid.h>
-#include <windhawk_utils.h>
-#include <winnt.h>
-
-#define STATUS_SUCCESS 0x00000000
-
-typedef NTSTATUS (NTAPI *RtlGetVersion_t)(PRTL_OSVERSIONINFOW);
-RtlGetVersion_t RtlGetVersion;
+#include <Windows.h>
+#include <CommCtrl.h>
+#include <initguid.h>   
+#include <Unknwn.h>    
+#include <objbase.h> 
 
 DEFINE_GUID(GUID_Win32Clock,
     0x0A323554A,
@@ -76,109 +73,76 @@ interface Win32Clock
     CONST_VTBL struct Win32ClockVtbl* lpVtbl;
 };
 
-void (*ClockButton_StartTicking)(void *pThis);
-
-#define ClockButton_Window(pThis) *((HWND *)pThis + 1)
-
-HRESULT (*ClockButton_v_OnClick_orig)(void *, UINT);
-HRESULT ClockButton_v_OnClick_hook(
-    void *pThis,
-    UINT  uClickDevice
-)
+BOOL ShowLegacyClockExperience(HWND hWnd)
 {
-    HRESULT hr = S_OK;
-    if (!FindWindowW(L"ClockFlyoutWindow", NULL))
+    if (!hWnd)
     {
-        Win32Clock *pClock = NULL;
-        hr = CoCreateInstance(
-            GUID_Win32Clock,
-            NULL,
-            CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
-            IID_Win32Clock,
-            (void **)&pClock
-        );
-        if (SUCCEEDED(hr))
-        {
-            HWND hClock = ClockButton_Window(pThis);
-            RECT rc;
-            GetWindowRect(hClock, &rc);
-            hr = pClock->lpVtbl->ShowWin32Clock(
-                pClock,
-                hClock,
-                &rc
-            );
-            if (SUCCEEDED(hr))
-            {
-                ClockButton_StartTicking(pThis);
-            }
-            pClock->lpVtbl->Release(pClock);
-        }
+        return FALSE;
     }
-    return hr;
+    HRESULT hr = S_OK;
+    Win32Clock* pWin32Clock = NULL;
+    hr = CoCreateInstance(
+        GUID_Win32Clock,
+        NULL,
+        CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER,
+        IID_Win32Clock,
+        (void**)&pWin32Clock
+    );
+    if (SUCCEEDED(hr))
+    {
+        RECT rc;
+        GetWindowRect(hWnd, &rc);
+        pWin32Clock->lpVtbl->ShowWin32Clock(pWin32Clock, hWnd, &rc);
+        pWin32Clock->lpVtbl->Release(pWin32Clock);
+    }
+    return TRUE;
 }
 
-const WindhawkUtils::SYMBOL_HOOK hooks[] = {
+LRESULT CALLBACK ClockButtonSubclassProc(
+    HWND hWnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData
+)
+{
+    if (uMsg == WM_NCDESTROY)
     {
-        {
-            L"public: void __cdecl ClockButton::StartTicking(void)"
-        },
-        &ClockButton_StartTicking,
-        nullptr,
-        false
-    },
-    {
-        {
-            L"protected: virtual long __cdecl ClockButton::v_OnClick(enum ClickDevice)"
-        },
-        &ClockButton_v_OnClick_orig,
-        ClockButton_v_OnClick_hook,
-        false
+        RemoveWindowSubclass(hWnd, ClockButtonSubclassProc, 1);
     }
-};
+    else if (uMsg == WM_LBUTTONDOWN || (uMsg == WM_KEYDOWN && wParam == VK_RETURN))
+    {
+        if (!FindWindowW(L"ClockFlyoutWindow", NULL))
+        {
+            return ShowLegacyClockExperience(hWnd);
+        }
+        else
+        {
+            return 1;
+        }
+    }
+
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+using CreateWindowExW_t = decltype(&CreateWindowExW);
+CreateWindowExW_t CreateWindowExW_Orig;
+HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle,LPCWSTR lpClassName,LPCWSTR lpWindowName,
+DWORD dwStyle,int X,int Y,int nWidth,int nHeight,HWND hWndParent,HMENU hMenu,HINSTANCE hInstance,LPVOID lpParam) {
+
+    HWND hWnd = CreateWindowExW_Orig(dwExStyle,lpClassName,lpWindowName,dwStyle,X,Y,nWidth,nHeight,hWndParent,hMenu,hInstance,lpParam);
+
+    if ((((ULONG_PTR)lpClassName & ~(ULONG_PTR)0xffff) != 0) && ((!wcscmp(lpClassName, L"TrayClockWClass") || !wcscmp(lpClassName, L"ClockButton")))) {
+		SetWindowSubclass(hWnd, ClockButtonSubclassProc, 1, 0);
+    }
+
+    return hWnd;
+}
 
 BOOL Wh_ModInit(void)
 {
-    HMODULE hNtDll = LoadLibraryW(L"ntdll.dll");
-    if (!hNtDll)
-    {
-        Wh_Log(L"Failed to load ntdll.dll");
-        return FALSE;
-    }
-
-    RtlGetVersion = (RtlGetVersion_t)GetProcAddress(hNtDll, "RtlGetVersion");
-    if (!RtlGetVersion)
-    {
-        Wh_Log(L"Failed to load RtlGetVersion from ntdll.dll");
-        return FALSE;
-    }
-
-    HMODULE hTaskbar = NULL;
-    RTL_OSVERSIONINFOW osv = { sizeof(RTL_OSVERSIONINFOW) };
-    if (STATUS_SUCCESS == RtlGetVersion(&osv))
-    {
-        hTaskbar = (osv.dwBuildNumber >= 22000) ? LoadLibraryW(L"Taskbar.dll") : GetModuleHandleW(NULL);
-    }
-    else
-    {
-        Wh_Log(L"RtlGetVersion failed");
-        return FALSE;
-    }
-
-    if (!hTaskbar)
-    {
-        Wh_Log(L"Failed to load Taskbar.dll");
-        return FALSE;
-    }
-    
-    if (!WindhawkUtils::HookSymbols(
-        hTaskbar,
-        hooks,
-        ARRAYSIZE(hooks)
-    ))
-    {
-        Wh_Log(L"Failed to hook one or more symbol functions");
-        return FALSE;
-    }
+        Wh_SetFunctionHook((void*)CreateWindowExW, (void*)CreateWindowExW_Hook, (void**)&CreateWindowExW_Orig);
 
     return TRUE;
 }
