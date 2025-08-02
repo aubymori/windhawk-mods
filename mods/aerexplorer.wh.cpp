@@ -3158,6 +3158,13 @@ BOOL Wh_ModInit(void)
     }
     HOOK_SYMBOLS(ExplorerFrame, explorerframeDllHooks)
 
+    VS_FIXEDFILEINFO *pVerInfo = GetModuleVersionInfo(ExplorerFrame, nullptr);
+    if (HIWORD(pVerInfo->dwFileVersionLS) > 21332)
+    {
+        Wh_Log(L"Rejecting Windows 11 ExplorerFrame.dll");
+        return FALSE;
+    }
+
     LOAD_MODULE(shell32)
     HOOK_SYMBOLS(shell32, shell32DllHooks)
 
