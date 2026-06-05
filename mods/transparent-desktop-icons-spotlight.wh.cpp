@@ -2,7 +2,7 @@
 // @id              transparent-desktop-icons-spotlight
 // @name            Transparent Desktop Icons with Spotlight
 // @description     Make desktop icons transparent when idle with an interactive spotlight effect. Hover over the desktop or select icons to reveal them with full clarity and customizable transitions.
-// @version         1.0
+// @version         1.0.1
 // @author          drgutman
 // @github          https://github.com/drgutman
 // @homepage        https://instagram.com/drgutman
@@ -28,66 +28,75 @@ customizable independent timeouts, blurs, and fade durations.
 
 ![Demonstration:](https://i.imgur.com/7cTTHTN.gif)
 
-**Note:** This mod captures the static Windows wallpaper for performance reasons. 
-It does not currently support live/animated wallpapers (e.g., Wallpaper Engine, Lively).
 
 ## Features
 
 * Dedicated render thread for flawless, vsync-matched 60/144+ FPS performance.
 * 0% background GPU/CPU usage when the desktop is idle.
-* Independent Dual-GPU Blur processing for both the cursor spotlight and selected icons.
-* Customizable shapes (square to circle) for both the spotlight and selected areas.
+* Independent GPU Blur processing for both the cursor spotlight and selected icon areas.
+* Customizable shapes (square to circle) for both the spotlight and selected icon areas.
 * Click-through architecture using WS_EX_TRANSPARENT ensures no interference with native OS interaction.
+
+**Limitations and known bugs:** 
+
+  * This mod captures the static Windows wallpaper for performance reasons. 
+    It does not currently support live/animated wallpapers (e.g., Wallpaper Engine, Lively).
+  * When changing themes, heavier ones (with very large wallpapers) tend to create a ghost of the last wallpaper.
+    The blink that happens after 4 seconds after a theme/wallpaper change (or the delay until new settings are applied) is to accommodate "Captured Motion" theme. 
+  * Multi-monitor systems might not display correctly, as I am currently using only one monitor
+    Will try to implement full multi-monitor support in the future
+
+
 */
 // ==/WindhawkModReadme==
 
 // ==WindhawkModSettings==
 /*
-- idleOpacity: 128
+- idleOpacity: 170
   $name: Idle Opacity
   $description: How much the icons are dimmed when idle (0 = icons fully visible, 255 = icons fully hidden)
-- spotlightRadius: 200
-  $name: Spotlight Radius
-  $description: Size of the spotlight in pixels
-- spotlightRoundness: 100
-  $name: Spotlight Roundness (%)
-  $description: Shape of the spotlight (0 = square, 100 = circle)
-- spotlightBlur: 40
-  $name: Spotlight Edge Blur
+- spotlightRadius: 320
+  $name: Mouse Spotlight Radius
+  $description: Size of the mouse spotlight in pixels
+- spotlightRoundness: 60
+  $name: Mouse Spotlight Roundness (%)
+  $description: Shape of the spotlight (0 = square, 100 = circular)
+- spotlightBlur: 30
+  $name: Mouse Spotlight Edge Blur
   $description: Blur radius for soft spotlight edges in pixels (0 = hard edge)
 - idleDelay: 2000
-  $name: Spotlight Idle Timeout (ms)
+  $name: Mouse Spotlight Idle Timeout (ms)
   $description: Time in milliseconds before the spotlight begins to fade out
-- spotlightFadeInDuration: 500
-  $name: Spotlight Fade In Duration (ms)
-  $description: How long it takes for the spotlight to fade in when mouse enters
-- spotlightFadeOutDuration: 500
-  $name: Spotlight Fade Out Duration (ms)
-  $description: How long it takes for the spotlight to fade out when mouse leaves
-- mouseSmoothing: 10
+- spotlightFadeInDuration: 100
+  $name: Mouse Spotlight Fade In Duration (ms)
+  $description: How long it takes for the spotlight to fade in when mouse enters the desktop area
+- spotlightFadeOutDuration: 2000
+  $name: Mouse Spotlight Fade Out Duration (ms)
+  $description: How long it takes for the spotlight to fade out when mouse leaves the desktop area
+- mouseSmoothing: 0
   $name: Mouse Smoothing
   $description: Smoothing factor for spotlight following (0-20, 0 = no smoothing, 20 = very smooth)
 - selectionOpacity: 255
-  $name: Selection Opacity
-  $description: How opaque icons become when selected (0 = transparent, 255 = fully visible)
-- selectionPadding: 12
-  $name: Selection Padding
+  $name: Icon Selection Opacity
+  $description: How visible icons become when selected (0 = transparent, 255 = fully visible)
+- selectionPadding: 30
+  $name: Icon Selection Padding
   $description: Extra space around selected icons in pixels
-- selectionRoundness: 25
-  $name: Selection Roundness (%)
-  $description: How rounded the selection box is (0 = sharp square, 100 = pill/circle)
-- selectionBlur: 15
-  $name: Selection Edge Blur
-  $description: Blur radius for the selection reveal box
-- selectionTimeout: 0
-  $name: Selection Timeout (ms)
-  $description: Time to keep the icon visible after deselection (0 = keep visible indefinitely while selected)
+- selectionRoundness: 20
+  $name: Icon Selection Roundness (%)
+  $description: How rounded the icon selection area is (0 = square, 100 = circular)
+- selectionBlur: 20
+  $name: Icon Selection Edge Blur
+  $description: Blur radius for the icon selection reveal area
+- selectionTimeout: 2000
+  $name: Icon Selection Timeout (ms)
+  $description: Time to keep the icon visible after deselection or when the mouse leaves the desktop area (0 = keep visible indefinitely while selected)
 - selectionFadeInDuration: 250
-  $name: Selection Fade In Duration (ms)
-  $description: How long the selection area takes to fade in when icon is selected
-- selectionFadeOutDuration: 250
-  $name: Selection Fade Out Duration (ms)
-  $description: How long the selection area takes to fade out after deselection
+  $name: Icon Selection Fade In Duration (ms)
+  $description: How long the icon selection area takes to fade in when icon is selected
+- selectionFadeOutDuration: 2000
+  $name: Icon Selection Fade Out Duration (ms)
+  $description: How long the icon selection area takes to fade out after deselection
 */
 // ==/WindhawkModSettings==
 
@@ -113,10 +122,14 @@ using namespace std::literals;
 using Microsoft::WRL::ComPtr;
 
 // Timer IDs
-#define TIMER_ID_RECREATE_OVERLAY 4
 #define TIMER_ID_STATE_POLL 2
+#define TIMER_ID_RECREATE_OVERLAY 4
+#define TIMER_ID_WALLPAPER_UPDATE 5
 
 #define WM_APP_CLEANUP (WM_APP + 1)
+#define WM_APP_DEVICE_LOST (WM_APP + 2)
+#define WM_APP_INIT (WM_APP + 3)
+
 #define OVERLAY_WINDOW_CLASS (L"TransparentDesktopSpotlight_" WH_MOD_ID)
 #define MESSAGE_WINDOW_CLASS L"TransparentDesktopSpotlight_Message_" WH_MOD_ID
 
@@ -157,10 +170,11 @@ std::atomic<bool> g_unloading{false};
 bool g_isRecreating = false;
 
 // Background Render Thread
-std::thread* g_renderThread = nullptr; // Heap pointer to prevent process termination on explorer unload
+std::thread* g_renderThread = nullptr;
 std::atomic<bool> g_threadStop{false};
 std::mutex g_renderMutex;
 std::atomic<bool> g_forceRender{true};
+HANDLE g_renderEvent = nullptr;
 
 // DirectX pipeline resources
 ComPtr<ID3D11Device> g_d3dDevice;
@@ -191,6 +205,7 @@ D2D1_POINT_2F g_smoothedMousePos = {0.0f, 0.0f};
 bool g_isIdle = true;
 ULONGLONG g_lastMouseTime = 0;
 float g_spotlightFade = 0.0f; 
+bool g_isMouseMoving = false;
 
 ULONGLONG g_lastSelectionTime = 0;
 float g_selectionFade = 0.0f;
@@ -202,11 +217,22 @@ HWND g_cachedHwndLV = nullptr;
 HWND g_cachedHwndShellView = nullptr;
 HWND g_cachedHwndDesktopHost = nullptr;
 std::vector<RECT> g_selectedRects;
+bool g_isEditing = false;
 
 // DPI scaling factor
 float g_dpiScale = 1.0f;
 
+// Initialization synchronization
+std::atomic<bool> g_initialized_desktop{false};
 std::atomic<bool> g_initialized{false};
+WCHAR g_lastKnownWallpaperPath[MAX_PATH] = {};
+
+// Cold-start retry tracking. g_initAttempts counts consecutive failed WM_APP_INIT
+// handling; g_lastInitFailure records the GetTickCount64 of the most recent failure.
+// On success both reset. Used to switch to a longer (5s) backoff after a few quick
+// attempts so we don't peg a timer forever on a permanently broken environment.
+std::atomic<int> g_initAttempts{0};
+std::atomic<ULONGLONG> g_lastInitFailure{0};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Forward declarations
@@ -267,24 +293,6 @@ HWND GetDesktopListView() {
     return nullptr;
 }
 
-bool IsFolderViewWnd(HWND hWnd) {
-    WCHAR buffer[64];
-    if (!GetClassName(hWnd, buffer, ARRAYSIZE(buffer)) || _wcsicmp(buffer, L"SysListView32")) return false;
-    if (!GetWindowText(hWnd, buffer, ARRAYSIZE(buffer)) || _wcsicmp(buffer, L"FolderView")) return false;
-    HWND hParent = GetAncestor(hWnd, GA_PARENT);
-    if (!hParent) return false;
-    if (!GetClassName(hParent, buffer, ARRAYSIZE(buffer)) || _wcsicmp(buffer, L"SHELLDLL_DefView")) return false;
-    
-    HWND hGrandParent = GetAncestor(hParent, GA_PARENT);
-    if (!hGrandParent) return false;
-    if (GetClassName(hGrandParent, buffer, ARRAYSIZE(buffer))) {
-        if (_wcsicmp(buffer, L"Progman") == 0 || _wcsicmp(buffer, L"WorkerW") == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 HMODULE GetCurrentModuleHandle() {
     HMODULE module;
     if (!GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCWSTR)GetCurrentModuleHandle, &module)) return nullptr;
@@ -309,27 +317,69 @@ void PollDesktopState() {
         }
     }
 
-    std::vector<RECT> selected;
+    // Check for inline renaming (F2 Edit Control)
+    bool isEditing = false;
     if (s_hwndLV) {
-        int idx = -1;
-        while ((idx = (int)SendMessage(s_hwndLV, LVM_GETNEXTITEM, idx, LVNI_SELECTED)) != -1) {
-            RECT rcBounds = {};
-            rcBounds.left = LVIR_BOUNDS;
-            if (SendMessage(s_hwndLV, LVM_GETITEMRECT, idx, (LPARAM)&rcBounds)) {
-                POINT ptTL = { rcBounds.left, rcBounds.top };
-                POINT ptBR = { rcBounds.right, rcBounds.bottom };
-                MapWindowPoints(s_hwndLV, g_overlayWnd, &ptTL, 1);
-                MapWindowPoints(s_hwndLV, g_overlayWnd, &ptBR, 1);
-                selected.push_back({ptTL.x, ptTL.y, ptBR.x, ptBR.y});
+        HWND hEdit = FindWindowEx(s_hwndLV, nullptr, L"Edit", nullptr);
+        if (!hEdit) hEdit = FindWindowEx(s_hwndLV, nullptr, L"WC_EDIT", nullptr);
+        if (hEdit && IsWindowVisible(hEdit)) {
+            isEditing = true;
+        }
+    }
+
+    static std::vector<RECT> s_selected;
+    s_selected.clear();
+
+    if (s_hwndLV) {
+        int selectedCount = (int)SendMessage(s_hwndLV, LVM_GETSELECTEDCOUNT, 0, 0);
+        if (selectedCount > 0) {
+            int idx = -1;
+            while ((idx = (int)SendMessage(s_hwndLV, LVM_GETNEXTITEM, idx, LVNI_SELECTED)) != -1) {
+                RECT rcBounds = {};
+                rcBounds.left = LVIR_BOUNDS;
+                if (SendMessage(s_hwndLV, LVM_GETITEMRECT, idx, (LPARAM)&rcBounds)) {
+                    POINT ptTL = { rcBounds.left, rcBounds.top };
+                    POINT ptBR = { rcBounds.right, rcBounds.bottom };
+                    MapWindowPoints(s_hwndLV, g_overlayWnd, &ptTL, 1);
+                    MapWindowPoints(s_hwndLV, g_overlayWnd, &ptBR, 1);
+                    s_selected.push_back({ptTL.x, ptTL.y, ptBR.x, ptBR.y});
+                }
             }
         }
     }
+
+    // Wake render thread if things are happening
+    POINT pt;
+    GetCursorPos(&pt);
+    static POINT s_lastScreenPosPoll = {0, 0};
+    bool mouseMovedPoll = (pt.x != s_lastScreenPosPoll.x || pt.y != s_lastScreenPosPoll.y);
+    s_lastScreenPosPoll = pt;
+
+    static bool s_wasEditing = false;
+    // g_selectedRects is only written from this (UI) thread below, and the
+    // render thread only reads it under g_stateMutex. The comparison here is
+    // safe without a lock because it runs on the same thread as the writer.
+    bool selectionChanged = (s_selected.size() != g_selectedRects.size());
+    if (!selectionChanged) {
+        for (size_t i = 0; i < s_selected.size(); ++i) {
+            if (s_selected[i].left != g_selectedRects[i].left || s_selected[i].right != g_selectedRects[i].right ||
+                s_selected[i].top != g_selectedRects[i].top || s_selected[i].bottom != g_selectedRects[i].bottom) {
+                selectionChanged = true; break;
+            }
+        }
+    }
+
+    if (mouseMovedPoll || selectionChanged || isEditing != s_wasEditing || g_forceRender) {
+        if (g_renderEvent) SetEvent(g_renderEvent);
+    }
+    s_wasEditing = isEditing;
 
     std::lock_guard<std::mutex> lock(g_stateMutex);
     g_cachedHwndLV = s_hwndLV;
     g_cachedHwndShellView = s_hwndShellView;
     g_cachedHwndDesktopHost = s_hwndDesktopHost;
-    g_selectedRects = std::move(selected);
+    g_selectedRects = s_selected;
+    g_isEditing = isEditing;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -379,43 +429,92 @@ void CaptureWallpaperBitmap() {
 
     HDC hdcScreen = GetDC(nullptr);
     if (!hdcScreen) return;
-
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
     if (!hdcMem) { ReleaseDC(nullptr, hdcScreen); return; }
 
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h; 
+    bmi.bmiHeader.biHeight = -h;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
     void* pvBits = nullptr;
     HBITMAP hBmp = CreateDIBSection(hdcMem, &bmi, DIB_RGB_COLORS, &pvBits, nullptr, 0);
-    if (!hBmp) {
-        DeleteDC(hdcMem); ReleaseDC(nullptr, hdcScreen); return;
-    }
-
+    if (!hBmp) { DeleteDC(hdcMem); ReleaseDC(nullptr, hdcScreen); return; }
     HGDIOBJ hOldBmp = SelectObject(hdcMem, hBmp);
 
-    POINT ptOrg = {0, 0};
-    ClientToScreen(g_overlayWnd, &ptOrg);
-    SetWindowOrgEx(hdcMem, ptOrg.x, ptOrg.y, nullptr);
+    HWND hIconHost = nullptr;
+    HWND hWorkerW = nullptr;
+    while ((hWorkerW = FindWindowEx(nullptr, hWorkerW, L"WorkerW", nullptr)) != nullptr) {
+        if (FindWindowEx(hWorkerW, nullptr, L"SHELLDLL_DefView", nullptr)) {
+            hIconHost = hWorkerW;
+            break;
+        }
+    }
+    
+    HWND hProgman = FindWindow(L"Progman", nullptr);
+    if (!hIconHost && hProgman) {
+        if (FindWindowEx(hProgman, nullptr, L"SHELLDLL_DefView", nullptr))
+            hIconHost = hProgman;
+    }
 
-    PaintDesktop(hdcMem);
+    HWND hWallpaperWnd = nullptr;
+    if (hIconHost) {
+        RECT rcIconHost = {};
+        GetWindowRect(hIconHost, &rcIconHost);
+
+        hWorkerW = nullptr;
+        while ((hWorkerW = FindWindowEx(nullptr, hWorkerW, L"WorkerW", nullptr)) != nullptr) {
+            if (hWorkerW == hIconHost) continue;
+            if (!IsWindowVisible(hWorkerW)) continue;
+            RECT rcWorker = {};
+            GetWindowRect(hWorkerW, &rcWorker);
+            if (rcWorker.left == rcIconHost.left && rcWorker.top == rcIconHost.top &&
+                rcWorker.right == rcIconHost.right && rcWorker.bottom == rcIconHost.bottom) {
+                hWallpaperWnd = hWorkerW;
+                break;
+            }
+        }
+    }
+
+    if (!hWallpaperWnd) hWallpaperWnd = hProgman;
+
+    bool captured = false;
+    if (hWallpaperWnd) {
+        HWND hDefView = FindWindowEx(hWallpaperWnd, nullptr, L"SHELLDLL_DefView", nullptr);
+        
+        bool overlayWasVisible = g_overlayWnd && IsWindowVisible(g_overlayWnd);
+        bool defViewWasVisible = hDefView && IsWindowVisible(hDefView);
+
+        if (overlayWasVisible) ShowWindow(g_overlayWnd, SW_HIDE);
+        if (defViewWasVisible) ShowWindow(hDefView, SW_HIDE);
+
+        captured = PrintWindow(hWallpaperWnd, hdcMem, PW_RENDERFULLCONTENT) != 0;
+
+        if (defViewWasVisible) ShowWindow(hDefView, SW_SHOW);
+        if (overlayWasVisible) ShowWindow(g_overlayWnd, SW_SHOWNA);
+    }
+    if (!captured) {
+        POINT ptOrg = {0, 0};
+        ClientToScreen(g_overlayWnd, &ptOrg);
+        SetWindowOrgEx(hdcMem, ptOrg.x, ptOrg.y, nullptr);
+        PaintDesktop(hdcMem);
+    }
+
     GdiFlush();
 
-    // D2D1_ALPHA_MODE_IGNORE naturally treats the 32-bit GDI bitmap as fully opaque
-    D2D1_BITMAP_PROPERTIES bitmapProps = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+    D2D1_BITMAP_PROPERTIES bitmapProps = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE));
+    g_wallpaperBitmap.Reset();
     g_dc->CreateBitmap(D2D1::SizeU(w, h), pvBits, w * 4, bitmapProps, &g_wallpaperBitmap);
 
     SelectObject(hdcMem, hOldBmp);
     DeleteObject(hBmp);
     DeleteDC(hdcMem);
     ReleaseDC(nullptr, hdcScreen);
-    
-    g_forceRender = true;
+
 }
 
 void RecreateBrushesAndMask(UINT width, UINT height) {
@@ -550,6 +649,7 @@ void UpdateMouseAndAnimations(float deltaTime) {
     static POINT s_lastScreenPos = {0, 0};
     bool mouseMoved = (screenPos.x != s_lastScreenPos.x || screenPos.y != s_lastScreenPos.y);
     s_lastScreenPos = screenPos;
+    g_isMouseMoving = mouseMoved;
 
     POINT localPos = screenPos;
     ScreenToClient(g_overlayWnd, &localPos);
@@ -561,15 +661,20 @@ void UpdateMouseAndAnimations(float deltaTime) {
     }
 
     bool overDesktop = false;
+    bool isEditing = false;
     std::vector<RECT> currentSelectedRects;
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         currentSelectedRects = g_selectedRects;
+        isEditing = g_isEditing;
         
+        // Ensure child controls (like F2 Edit) keep the spotlight active
+        HWND parent = GetAncestor(hWndAtCursor, GA_PARENT);
         overDesktop = (hWndAtCursor == g_cachedHwndLV || 
                        hWndAtCursor == g_cachedHwndShellView || 
                        hWndAtCursor == g_cachedHwndDesktopHost || 
-                       hWndAtCursor == g_overlayWnd);
+                       hWndAtCursor == g_overlayWnd ||
+                       (g_cachedHwndLV && parent == g_cachedHwndLV));
     }
 
     // --- Spotlight Logic ---
@@ -621,7 +726,11 @@ void UpdateMouseAndAnimations(float deltaTime) {
     float targetSelFade = 0.0f;
     
     if (!g_cachedSelectedRects.empty()) {
-        if (g_settings.selectionTimeout <= 0) {
+        if (isEditing) {
+            // Keep infinite timeout while editing an icon
+            targetSelFade = 1.0f;
+            g_lastSelectionTime = GetTickCount64(); 
+        } else if (g_settings.selectionTimeout <= 0) {
             targetSelFade = currentSelectedRects.empty() ? 0.0f : 1.0f;
         } else {
             ULONGLONG timeSinceInteraction = GetTickCount64() - g_lastSelectionTime;
@@ -755,20 +864,24 @@ void RenderLoop() {
 
         bool frameRendered = false;
         ComPtr<IDXGISwapChain1> currentSwapChain;
+        
+        bool isFullyIdle = false;
 
         {
             std::lock_guard<std::mutex> lock(g_renderMutex);
             if (g_overlayWnd && !g_unloading) {
                 UpdateMouseAndAnimations(deltaTime);
 
-                // Idle skip condition: Only render if opacities are shifting, 
-                // OR if mouse is moving while the spotlight is actually visible
+                // We skip rendering if the screen is perfectly static (nothing moving or fading)
                 bool stateChanged = (std::abs(g_spotlightFade - s_lastRenderedSpotFade) > 0.001f) ||
                                     (std::abs(g_selectionFade - s_lastRenderedSelFade) > 0.001f) ||
                                     ((std::abs(g_smoothedMousePos.x - s_lastRenderedMousePos.x) > 0.1f ||
                                       std::abs(g_smoothedMousePos.y - s_lastRenderedMousePos.y) > 0.1f) &&
                                      (g_spotlightFade > 0.001f || !g_isIdle)) ||
                                     g_forceRender;
+                                    
+                // Check if the screen is completely blank AND the mouse is physically stationary
+                isFullyIdle = (g_spotlightFade <= 0.001f && g_selectionFade <= 0.001f && g_isIdle && !g_isMouseMoving);
 
                 if (stateChanged && g_swapChain && g_targetBitmap) {
                     RenderOverlay();
@@ -785,9 +898,17 @@ void RenderLoop() {
         } 
 
         if (frameRendered && currentSwapChain) {
-            currentSwapChain->Present(1, 0); 
+            // This naturally VSync-blocks to native monitor refresh rate (60Hz, 144Hz, etc.)
+            HRESULT hr = currentSwapChain->Present(1, 0); 
+            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+                if (g_messageWnd) PostMessage(g_messageWnd, WM_APP_DEVICE_LOST, 0, 0);
+            }
         } else {
-            Sleep(16); // 0% GPU / CPU Usage while completely idle
+            // We skipped the frame. 
+            // If completely blank, go to deep sleep (0% CPU). 
+            // Otherwise, we sleep for 10ms so we can still track fade/idle timers without locking the CPU.
+            DWORD sleepTime = isFullyIdle ? INFINITE : 10;
+            WaitForSingleObject(g_renderEvent, sleepTime);
         }
     }
 }
@@ -812,15 +933,16 @@ LRESULT CALLBACK OverlayWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 std::lock_guard<std::mutex> lock(g_renderMutex);
                 ResizeSwapChain(wp->cx, wp->cy);
                 CaptureWallpaperBitmap();
+                g_forceRender = true;
+                if (g_renderEvent) SetEvent(g_renderEvent);
             }
             break;
         }
         case WM_DESTROY:
             g_threadStop = true;
+            if (g_renderEvent) SetEvent(g_renderEvent);
             if (g_renderThread) {
-                if (g_renderThread->joinable()) {
-                    g_renderThread->join();
-                }
+                if (g_renderThread->joinable()) g_renderThread->join();
                 delete g_renderThread;
                 g_renderThread = nullptr;
             }
@@ -853,20 +975,46 @@ LRESULT CALLBACK MessageWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 CreateOverlayWindow();
                 g_isRecreating = false;
             }
-            return 0;
-
-        case WM_SETTINGCHANGE:
-            if (!g_unloading && (wParam == SPI_SETDESKWALLPAPER || (lParam && wcscmp((LPCWSTR)lParam, L"Desktop") == 0))) {
+            else if (!g_unloading && wParam == TIMER_ID_WALLPAPER_UPDATE) {
+                KillTimer(hWnd, TIMER_ID_WALLPAPER_UPDATE);
                 if (g_overlayWnd) {
                     std::lock_guard<std::mutex> lock(g_renderMutex);
                     CaptureWallpaperBitmap();
+                    g_forceRender = true;
+                    if (g_renderEvent) SetEvent(g_renderEvent);
+                }
+            }
+            return 0;
+
+        case WM_APP_DEVICE_LOST:
+            if (!g_unloading && !g_isRecreating) {
+                SetTimer(hWnd, TIMER_ID_RECREATE_OVERLAY, 100, nullptr);
+            }
+            return 0;
+
+        case WM_SETTINGCHANGE:
+            if (!g_unloading) {
+                bool triggerUpdate = false;
+                if (wParam == SPI_SETDESKWALLPAPER) {
+                    triggerUpdate = true;
+                } else if (lParam) {
+                    LPCWSTR strParam = (LPCWSTR)lParam;
+                    if (wcscmp(strParam, L"Desktop") == 0 ||
+                        wcscmp(strParam, L"ImmersiveColorSet") == 0 ||
+                        wcscmp(strParam, L"WindowsTheme") == 0 ||
+                        wcscmp(strParam, L"WindowMetrics") == 0) {
+                        triggerUpdate = true;
+                    }
+                }
+                if (triggerUpdate && g_overlayWnd) {
+                    SetTimer(hWnd, TIMER_ID_WALLPAPER_UPDATE, 4000, nullptr);
                 }
             }
             break;
 
         case WM_DISPLAYCHANGE:
             if (!g_unloading) {
-                SetTimer(hWnd, TIMER_ID_RECREATE_OVERLAY, 500, nullptr);
+                SetTimer(hWnd, TIMER_ID_RECREATE_OVERLAY, 50, nullptr);
             }
             break;
 
@@ -889,29 +1037,38 @@ bool RegisterOverlayWindowClass() {
     wc.lpfnWndProc = OverlayWndProc;
     wc.hInstance = GetCurrentModuleHandle();
     wc.lpszClassName = OVERLAY_WINDOW_CLASS;
-    return RegisterClass(&wc) != 0;
+    if (RegisterClass(&wc) == 0) {
+        return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    }
+    return true;
 }
 
 void CreateOverlayWindow() {
     if (g_overlayWnd) return;
 
+    auto scheduleRetry = [&]() {
+        if (g_messageWnd && !g_unloading) {
+            SetTimer(g_messageWnd, TIMER_ID_RECREATE_OVERLAY, 500, nullptr);
+        }
+    };
+
     if (!g_initialized) {
-        if (!InitDirectX()) return;
+        if (!InitDirectX()) { scheduleRetry(); return; }
         g_initialized = true;
     } else {
         HRESULT hr = g_d3dDevice ? g_d3dDevice->GetDeviceRemovedReason() : E_FAIL;
         if (FAILED(hr)) {
             UninitDirectX();
             g_initialized = false;
-            if (!InitDirectX()) return;
+            if (!InitDirectX()) { scheduleRetry(); return; }
             g_initialized = true;
         }
     }
 
     HWND hParent = GetDesktopParent();
-    if (!hParent) return;
+    if (!hParent) { scheduleRetry(); return; }
 
-    if (!RegisterOverlayWindowClass()) return;
+    if (!RegisterOverlayWindowClass()) { scheduleRetry(); return; }
 
     RECT rc;
     GetWindowRect(hParent, &rc);
@@ -923,7 +1080,7 @@ void CreateOverlayWindow() {
         OVERLAY_WINDOW_CLASS, nullptr, WS_CHILD | WS_VISIBLE, 0, 0, width,
         height, hParent, nullptr, GetCurrentModuleHandle(), nullptr);
 
-    if (!g_overlayWnd) return;
+    if (!g_overlayWnd) { scheduleRetry(); return; }
 
     SetWindowPos(g_overlayWnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
@@ -943,16 +1100,17 @@ void CreateOverlayWindow() {
             // Poll once instantly so the background thread has correct window handles on frame 1
             PollDesktopState();
 
+            if (!g_renderEvent) {
+                g_renderEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            }
             g_threadStop = false;
             g_renderThread = new std::thread(RenderLoop);
             
-            SetTimer(g_overlayWnd, TIMER_ID_STATE_POLL, 50, nullptr); 
+            SetTimer(g_overlayWnd, TIMER_ID_STATE_POLL, 32, nullptr); 
         } else {
             DestroyWindow(g_overlayWnd);
             g_overlayWnd = nullptr;
-            if (g_messageWnd) {
-                SetTimer(g_messageWnd, TIMER_ID_RECREATE_OVERLAY, 2000, nullptr);
-            }
+            scheduleRetry();
         }
     }
 }
@@ -962,7 +1120,10 @@ bool RegisterMessageWindowClass() {
     wc.lpfnWndProc = MessageWndProc;
     wc.hInstance = GetCurrentModuleHandle();
     wc.lpszClassName = MESSAGE_WINDOW_CLASS;
-    return RegisterClass(&wc) != 0;
+    if (RegisterClass(&wc) == 0) {
+        return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    }
+    return true;
 }
 
 void CreateMessageWindow() {
@@ -973,40 +1134,71 @@ void CreateMessageWindow() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Hooks
+// Thread-Safe Initialization Hooks
 
-using CreateWindowExW_t = decltype(&CreateWindowExW);
-CreateWindowExW_t CreateWindowExW_Original;
-
-HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName, LPCWSTR lpWindowName, DWORD dwStyle, int X, int Y, int nWidth, int nHeight, HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, PVOID lpParam) {
-    HWND hWnd = CreateWindowExW_Original(dwExStyle, lpClassName, lpWindowName, dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
-    if (!hWnd || !IsFolderViewWnd(hWnd)) return hWnd;
-
-    // Use a standard window timer instead of a callback lambda to avoid use-after-free crashes
-    SetTimer(hWnd, 0x1337, 1000, nullptr);
-
-    return hWnd;
-}
-
-bool g_initialized_desktop = false;
-DWORD g_desktopThreadId = 0;
 using DispatchMessageW_t = decltype(&DispatchMessageW);
 DispatchMessageW_t DispatchMessageW_Original;
 
 LRESULT WINAPI DispatchMessageW_Hook(const MSG* lpMsg) {
-    if (!g_initialized_desktop && g_desktopThreadId != 0 && GetCurrentThreadId() == g_desktopThreadId) {
-        g_initialized_desktop = true;
-        CreateOverlayWindow();
-        CreateMessageWindow();
-    }
-    
-    // Catch the safe bootstrap timer
-    if (lpMsg->message == WM_TIMER && lpMsg->wParam == 0x1337 && IsFolderViewWnd(lpMsg->hwnd)) {
-        KillTimer(lpMsg->hwnd, 0x1337);
-        CreateOverlayWindow();
-        CreateMessageWindow();
-    }
+    if (!g_unloading) {
+        // 1. Handling Initialization Execution (Runs safely on target desktop thread)
+        if (lpMsg->message == WM_APP_INIT && lpMsg->hwnd == nullptr) {
+            CreateMessageWindow();
+            if (g_messageWnd) {
+                CreateOverlayWindow();
+                if (g_overlayWnd) {
+                    g_initAttempts.store(0, std::memory_order_relaxed);
+                    g_lastInitFailure.store(0, std::memory_order_relaxed);
+                } else {
+                    g_initAttempts.fetch_add(1, std::memory_order_relaxed);
+                    g_lastInitFailure.store(GetTickCount64(), std::memory_order_relaxed);
+                    g_initialized_desktop = false; // Reset to allow discovery again
+                }
+            } else {
+                g_initAttempts.fetch_add(1, std::memory_order_relaxed);
+                g_lastInitFailure.store(GetTickCount64(), std::memory_order_relaxed);
+                g_initialized_desktop = false; // Reset to allow discovery again
+            }
+        }
+        // 2. Hardware-level Mouse Instant Wake
+        else if (g_renderEvent &&
+                 ((lpMsg->message >= WM_MOUSEFIRST && lpMsg->message <= WM_MOUSELAST) ||
+                  lpMsg->message == 0x0245 /* WM_POINTERUPDATE */)) {
+            SetEvent(g_renderEvent);
+        }
 
+        // 3. Desktop Window Discovery (Can be safely executed by ANY thread)
+        if (!g_initialized_desktop) {
+            ULONGLONG now = GetTickCount64();
+
+            // Backoff logic: If we failed 5+ times, wait 5 seconds between searches
+            bool useLongBackoff = g_initAttempts.load(std::memory_order_relaxed) > 5;
+            ULONGLONG lastFail = g_lastInitFailure.load(std::memory_order_relaxed);
+            bool backoffActive = (useLongBackoff && lastFail != 0 && (now - lastFail) < 5000);
+
+            if (!backoffActive) {
+                static std::atomic<ULONGLONG> s_lastCheck{0};
+                ULONGLONG last = s_lastCheck.load(std::memory_order_relaxed);
+
+                // Throttle searches to every 500ms
+                if (now - last >= 500) {
+                    s_lastCheck.store(now, std::memory_order_relaxed);
+
+                    HWND hLV = GetDesktopListView();
+                    if (hLV && IsWindowVisible(hLV)) {
+                        DWORD tid = GetWindowThreadProcessId(hLV, nullptr);
+                        if (tid != 0) {
+                            // We found the desktop! ANY thread can safely post this 
+                            // message directly to the desktop's thread queue.
+                            if (PostThreadMessage(tid, WM_APP_INIT, 0, 0)) {
+                                g_initialized_desktop = true; 
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     return DispatchMessageW_Original(lpMsg);
 }
 
@@ -1035,26 +1227,28 @@ void LoadSettings() {
     std::lock_guard<std::mutex> lock(g_renderMutex);
     g_settings = newSettings;
     g_forceRender = true;
+    if (g_renderEvent) SetEvent(g_renderEvent);
 }
 
 BOOL Wh_ModInit() {
     LoadSettings();
-    WindhawkUtils::SetFunctionHook(CreateWindowExW, CreateWindowExW_Hook, &CreateWindowExW_Original);
     WindhawkUtils::SetFunctionHook(DispatchMessageW, DispatchMessageW_Hook, &DispatchMessageW_Original);
 
-    HWND hLV = GetDesktopListView();
-    if (hLV) {
-        g_desktopThreadId = GetWindowThreadProcessId(hLV, nullptr);
-        PostMessage(hLV, WM_NULL, 0, 0); // Wake up the thread
-    }
     return TRUE;
 }
 
 void Wh_ModUninit() {
     g_unloading = true;
+    
     if (g_overlayWnd) SendMessage(g_overlayWnd, WM_APP_CLEANUP, 0, 0);
     if (g_messageWnd) SendMessage(g_messageWnd, WM_APP_CLEANUP, 0, 0);
+    
     UninitDirectX();
+    
+    if (g_renderEvent) {
+        CloseHandle(g_renderEvent);
+        g_renderEvent = nullptr;
+    }
     
     UnregisterClass(OVERLAY_WINDOW_CLASS, GetCurrentModuleHandle());
     UnregisterClass(MESSAGE_WINDOW_CLASS, GetCurrentModuleHandle());
