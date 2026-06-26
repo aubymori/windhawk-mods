@@ -2,7 +2,7 @@
 // @id              lock-keys-notifier
 // @name            Lock Keys Notifier
 // @description     Shows a customizable toast when a lock key (Caps/Num/Scroll/Insert) is toggled
-// @version         1.0.1
+// @version         1.1.0
 // @author          Havrlisan
 // @github          https://github.com/havrlisan
 // @homepage        https://github.com/havrlisan/lock-keys-notifier
@@ -48,10 +48,13 @@ Insert can show a single fixed label in a neutral color instead of ON/OFF:
 ## Notes
 - Runs as a tool mod in its own windhawk.exe process, so notifications keep
   working even when Explorer is restarting or not running.
-- Toggles made while an elevated (administrator) app has focus are not detected.
-  The mod process runs at medium integrity and Windows (UIPI) blocks it from
-  observing input to higher-integrity windows; this can't be worked around from a
-  mod. The next toggle in a normal app shows the correct state.
+- Toggles made while an elevated (administrator) app has focus are caught by an
+  optional poll fallback ("Detect toggles under elevated apps", on by default,
+  ~250 ms delay). The keyboard hook can't see input to higher-integrity windows
+  (UIPI), so the mod also polls the global lock state. This covers Caps/Num/Scroll.
+  Insert is the exception: its toggle state isn't readable across the integrity
+  boundary, so an Insert toggle made under an elevated app is still missed until the
+  next toggle in a normal app.
 - Fullscreen exclusive apps may cover the toast (or enable the option above to skip it).
 - Insert reports the OS toggle bit, not an app's overtype mode (off by default).
 */
@@ -74,6 +77,13 @@ Insert can show a single fixed label in a neutral color instead of ON/OFF:
     Skips the toast while a fullscreen application is in the foreground —
     games (DirectX or borderless), fullscreen video, and presentation mode.
     Focus Assist / Do Not Disturb is not affected.
+- pollElevated: true
+  $name: Detect toggles under elevated apps
+  $description: >-
+    Also polls the lock-key state (about every 250 ms) so a toggle made while an
+    administrator app has focus is still shown — the one case the keyboard hook
+    cannot see. Adds a small detection delay in that case. Caps/Num/Scroll only;
+    Insert cannot be detected under an elevated app.
 - layout: pill
   $name: Layout
   $options:
@@ -367,6 +377,7 @@ enum class SoundMode { None, SystemDefault, Custom };
 struct Settings {
     bool notifyCaps, notifyNum, notifyScroll, notifyInsert;
     bool suppressFullscreen;
+    bool pollElevated;
     int durationMs;
     MonitorTarget monitor;
     Anchor anchor;
@@ -456,6 +467,7 @@ void LoadSettings() {
     s.notifyScroll = Wh_GetIntSetting(L"notifyScrollLock");
     s.notifyInsert = Wh_GetIntSetting(L"notifyInsert");
     s.suppressFullscreen = Wh_GetIntSetting(L"suppressFullscreen");
+    s.pollElevated = Wh_GetIntSetting(L"pollElevated");
     s.durationMs   = Wh_GetIntSetting(L"durationMs");
     s.monitor      = ParseMonitor(GetStr(L"monitor"));
     s.anchor       = ParseAnchor(GetStr(L"positionAnchor"));
@@ -508,8 +520,22 @@ using namespace Gdiplus;
 
 #define WM_APP_SHOWTOAST (WM_APP + 1)
 #define WM_APP_QUIT      (WM_APP + 2)
+#define WM_APP_UPDATEPOLL (WM_APP + 3)
 
 enum KeyIndex { KI_Caps, KI_Num, KI_Scroll, KI_Insert, KI_Count };
+
+static const int kLockVk[KI_Count] = { VK_CAPITAL, VK_NUMLOCK, VK_SCROLL, VK_INSERT };
+
+// Last toggle state we reported per key. Shared by the hook (event path) and the
+// poll timer (fallback path); ShouldNotify dedups them so a normal toggle, which
+// both may observe, raises exactly one toast.
+static bool g_lastToggle[KI_Count];
+
+// Defined below with the hook/notify code; the poll-timer branch in ToastWndProc
+// (above their definitions) calls them.
+static bool KeyEnabled(const Settings& s, int ki);
+static bool ShouldNotify(int ki, bool curOn);
+void RequestToast(int keyIndex, bool isOn);
 
 static const wchar_t* kToastClass = L"LockKeysNotifierToast";
 
@@ -999,9 +1025,51 @@ static void PresentToast(ToastWindow& tw, const RECT& workArea, const Settings& 
 
 #define FADE_TIMER 1
 #define HOLD_TIMER 2
+#define POLL_TIMER 3
 #define FADE_TICK_MS 16
+#define POLL_TICK_MS 250
+// Coalescing tolerance: lets Windows batch the poll wakeup with other system
+// timers to cut distinct CPU wakeups (the poll is default-on, so it otherwise
+// fires forever). Costs up to this much extra worst-case detection latency.
+#define POLL_TOLERANCE_MS 100
 
 static HWND CreateToastWindow();
+
+// g_lastToggle and the poll timer are touched only on the worker thread (the hook
+// callback, the WM_TIMER poll, and these seeds all run there), so no lock is
+// needed beyond ShouldNotify's reuse of g_settingsCs.
+static bool g_pollTimerOn = false;
+
+static void SeedToggleState() {
+    for (int i = 0; i < KI_Count; ++i)
+        g_lastToggle[i] = (GetKeyState(kLockVk[i]) & 1) != 0;
+}
+
+// Arm/disarm the poll timer to match the pollElevated setting. Worker thread only
+// (it owns the timer's window and message pump). The timer exists only while the
+// feature is on, so a user who disables it pays no recurring wakeup. On enable,
+// re-seed first so the first tick means "from now on" and never replays a toggle
+// that was missed while polling was off.
+static void UpdatePollTimer() {
+    if (!g_primaryToastHwnd) return;
+    EnterCriticalSection(&g_settingsCs);
+    // Arm only when the poll could actually deliver: the feature is on AND at least
+    // one *pollable* key notifies. The poll exists to close the elevated-focus gap,
+    // which only Caps/Num/Scroll can recover — Insert's toggle isn't maintained
+    // across the integrity boundary — so Insert alone is no reason to run the timer.
+    bool want = g_settings.pollElevated &&
+                (g_settings.notifyCaps || g_settings.notifyNum || g_settings.notifyScroll);
+    LeaveCriticalSection(&g_settingsCs);
+    if (want && !g_pollTimerOn) {
+        SeedToggleState();
+        SetCoalescableTimer(g_primaryToastHwnd, POLL_TIMER, POLL_TICK_MS, nullptr,
+                            POLL_TOLERANCE_MS);
+        g_pollTimerOn = true;
+    } else if (!want && g_pollTimerOn) {
+        KillTimer(g_primaryToastHwnd, POLL_TIMER);
+        g_pollTimerOn = false;
+    }
+}
 
 static void DoShow(int keyIndex, bool isOn) {
     Settings s;
@@ -1070,7 +1138,27 @@ static LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     case WM_APP_QUIT:
         PostQuitMessage(0);
         return 0;
+    case WM_APP_UPDATEPOLL:
+        UpdatePollTimer();
+        return 0;
     case WM_TIMER: {
+        if (wParam == POLL_TIMER) {
+            Settings s;
+            EnterCriticalSection(&g_settingsCs);
+            s = g_settings;
+            LeaveCriticalSection(&g_settingsCs);
+            // The timer only runs while pollElevated is on; this re-check just
+            // covers the brief window before a disable's KillTimer lands. The
+            // toggle bit GetKeyState returns here is the global lock state — the
+            // same read the hook path relies on, valid on this non-focused thread.
+            if (s.pollElevated) {
+                for (int i = 0; i < KI_Count; ++i) {
+                    bool isOn = (GetKeyState(kLockVk[i]) & 1) != 0;
+                    if (KeyEnabled(s, i) && ShouldNotify(i, isOn)) RequestToast(i, isOn);
+                }
+            }
+            return 0;
+        }
         // Find which toast owns this hwnd.
         ToastWindow* tw = nullptr;
         for (auto& t : g_toasts) if (t.hwnd == hwnd) { tw = &t; break; }
@@ -1144,7 +1232,13 @@ void RequestToast(int keyIndex, bool isOn) {
     }
 }
 
-static const int kLockVk[KI_Count] = { VK_CAPITAL, VK_NUMLOCK, VK_SCROLL, VK_INSERT };
+static bool ShouldNotify(int ki, bool curOn) {
+    EnterCriticalSection(&g_settingsCs);
+    bool changed = (curOn != g_lastToggle[ki]);
+    if (changed) g_lastToggle[ki] = curOn;
+    LeaveCriticalSection(&g_settingsCs);
+    return changed;
+}
 static HHOOK g_realHook = nullptr;
 
 static bool KeyEnabled(const Settings& s, int ki) {
@@ -1164,10 +1258,11 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lPa
             for (int i = 0; i < KI_Count; ++i) {
                 if ((int)k->vkCode != kLockVk[i]) continue;
                 // Read the live toggle bit on the key-up edge. The state is settled
-                // by release (the key-down read lags), and reading the real bit each
-                // time means a toggle we never saw (e.g. one made while an elevated
-                // app held focus, which UIPI hides from this hook) cannot desync what
-                // we display. One key-up per physical press also ignores auto-repeat.
+                // by release (the key-down read lags). The hook can't see input to a
+                // higher-integrity (elevated) window (UIPI); the poll-timer fallback
+                // covers that gap for Caps/Num/Scroll. ShouldNotify dedups the two
+                // paths so a normal toggle (seen by both) raises one toast. One key-up
+                // per physical press also ignores auto-repeat.
                 bool isOn = (GetKeyState(kLockVk[i]) & 1) != 0;
                 EnterCriticalSection(&g_settingsCs);
                 bool enabled = KeyEnabled(g_settings, i);
@@ -1176,7 +1271,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lPa
                 // it returns, so keep it cheap. The fullscreen-suppress check
                 // (shell + window/monitor queries) runs in DoShow on the worker
                 // thread, after this callback has returned.
-                if (enabled) RequestToast(i, isOn);
+                if (enabled && ShouldNotify(i, isOn)) RequestToast(i, isOn);
                 break;
             }
         }
@@ -1231,6 +1326,13 @@ static DWORD WINAPI WorkerThreadProc(LPVOID) {
     // reads live key state via GetKeyState) only ever runs on this thread.
     g_hookInstalled = (g_realHook != nullptr);
     if (!g_realHook) Wh_Log(L"keyboard hook install failed");
+
+    // Seed last-known toggle state unconditionally — the hook's dedup path needs it
+    // even when the poll is off. Arming the poll fallback (only if pollElevated is
+    // set) re-seeds, so the first tick never fires spuriously.
+    SeedToggleState();
+    UpdatePollTimer();
+
     if (g_workerReady) SetEvent(g_workerReady);
 
     // Warm the GDI+ text pipeline on a throwaway thread (see WarmupThreadProc),
@@ -1316,6 +1418,10 @@ void WhTool_ModUninit() {
 void WhTool_ModSettingsChanged() {
     Wh_Log(L"Lock Keys Notifier settings changed");
     LoadSettings();
+    // Runs on Windhawk's thread; marshal the timer start/stop to the worker, which
+    // owns the timer's window and pump. UpdatePollTimer re-reads pollElevated.
+    if (g_primaryToastHwnd)
+        PostMessageW(g_primaryToastHwnd, WM_APP_UPDATEPOLL, 0, 0);
 }
 
 // --- Windhawk Tool Mod Boilerplate (Do not modify) ---
