@@ -20,6 +20,7 @@ EXCLUDED_IMAGE_URLS = {
 # readme, keeping the original path for the saved image.
 FETCH_URL_WORKAROUNDS = {
     "https://raw.githubusercontent.com/QCQ171-C/mods-collection/refs/heads/main/Gallery/folder-thumbnail-tweaker/11-7.PNG": "https://raw.githubusercontent.com/QCQ171-C/mods-collection/refs/heads/main/Gallery/folder-thumbnail-tweaker/11-7.png",
+    "https://raw.githubusercontent.com/QCQ171-C/mods-collection/refs/heads/main/Gallery/folder-thumbnail-tweaker/10-11.png": "https://raw.githubusercontent.com/QCQ171-C/mods-collection/refs/heads/main/Gallery/folder-thumbnail-tweaker/10-11.PNG",
 }
 
 session = requests.Session()
