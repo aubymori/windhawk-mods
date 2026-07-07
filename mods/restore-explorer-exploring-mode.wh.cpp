@@ -134,8 +134,6 @@ enum TREE_VIEW_MODE
 WindhawkUtils::StringSetting g_spszExploringText;
 bool g_fOpenInNewWindow = false;
 
-
-
 interface IBrowserEvents : IUnknown
 {
     STDMETHOD(OnBrowserCreated)(HWND hwndBrowser, IDispatch *pdispBrowser, IShellItem *psi) PURE;
@@ -384,7 +382,8 @@ HRESULT CMemPropStore_Write_hook(
                 &hkey))
             {
                 DWORD cbData = 0;
-                if (ERROR_SUCCESS == RegQueryValueExW(hkey, L"PageSpaceControlSizer", nullptr, nullptr, nullptr, &cbData))
+                if (ERROR_SUCCESS == RegQueryValueExW(hkey, L"PageSpaceControlSizer", nullptr, nullptr, nullptr, &cbData)
+                    && cbData > 4)
                 {
                     LPBYTE lpData = (LPBYTE)LocalAlloc(LPTR, cbData);
                     if (lpData)
@@ -397,6 +396,7 @@ HRESULT CMemPropStore_Write_hook(
                         LocalFree(lpData);
                     }
                 }
+                RegCloseKey(hkey);
             }
         }
     }
@@ -764,6 +764,7 @@ void Wh_ModSettingsChanged(void)
     {
         g_treeViewMode = TVM_7;
     }
+    Wh_FreeStringSetting(pszTreeMode);
 #endif
     g_fOpenInNewWindow = Wh_GetIntSetting(L"open_in_new_window");
 }
