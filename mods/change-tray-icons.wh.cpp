@@ -2,7 +2,7 @@
 // @id              change-tray-icons
 // @name            Change Tray Icons
 // @description     Change all tray icons for an application to a specific other icon
-// @version         1.0.0
+// @version         1.0.1
 // @author          aubymori
 // @github          https://github.com/aubymori
 // @compilerOptions -lshell32 -lgdi32
@@ -106,6 +106,11 @@ void Wh_ModSettingsChanged(void)
                 cxIcon = GetSystemMetrics(SM_CXSMICON);
                 cyIcon = GetSystemMetrics(SM_CYSMICON);
             }
+
+            // Load the icon at twice the tray size so Windows can
+            // perform the final downscaling using a higher-resolution source.
+            cxIcon *= 2;
+            cyIcon *= 2;
 
             LPCWSTR pszIconPath = Wh_GetStringSetting(L"icons[%d].icon", i);
             g_hIcon = (HICON)LoadImageW(
