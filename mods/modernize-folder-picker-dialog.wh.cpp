@@ -1,8 +1,10 @@
 // ==WindhawkMod==
 // @id              modernize-folder-picker-dialog
 // @name            Modernize Folder Picker Dialog
+// @name:zh-CN      现代化文件夹选择对话框
 // @description     Replaces the classic "Browse For Folder" dialog
-// @version         1.0.0
+// @description:zh-CN 将过时的“浏览文件夹”对话框替换为现代化的文件夹选择对话框，浏览与操作更加直观便捷。
+// @version         1.0.1
 // @author          aubymori
 // @github          https://github.com/aubymori
 // @include         *
